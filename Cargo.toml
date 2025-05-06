@@ -1,0 +1,13 @@
+[package]
+name = "duplicatefilefinder"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe   = { version = "0.31", features = ["glow"] }   # GUI framework
+egui = "0.31"                  # GUI library
+walkdir = "2.4"                 # Efficient filesystem traversal
+rayon = "1.10"                  # Parallel processing (hashing)
+sha2 = "0.10"                   # SHA-256 hashing (fast, reliable)
+tokio = { version = "1.37", features = ["full"] } # Async runtime for cloud APIs
+google-drive3 = "5.0.4"         # Google Drive API crate
