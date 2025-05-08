@@ -11,3 +11,4 @@ rayon = "1.10"                  # Parallel processing (hashing)
 sha2 = "0.10"                   # SHA-256 hashing (fast, reliable)
 tokio = { version = "1.37", features = ["full"] } # Async runtime for cloud APIs
 google-drive3 = "5.0.4"         # Google Drive API crate
+hyper-rustls = "0.24"

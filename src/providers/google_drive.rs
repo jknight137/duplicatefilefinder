@@ -1,17 +1,27 @@
-use google_drive3::{DriveHub, oauth2, hyper, hyper_rustls};
+use google_drive3::{DriveHub, hyper, hyper_rustls, oauth2};
 
 pub async fn init_drive_client() -> DriveHub<hyper_rustls::HttpsConnector<hyper::client::HttpConnector>> {
-    let secret = oauth2::read_application_secret("credentials.json").await.unwrap();
+    let secret = oauth2::read_application_secret("credentials.json")
+        .await
+        .expect("Failed to read Google API credentials");
+
     let auth = oauth2::InstalledFlowAuthenticator::builder(
         secret,
         oauth2::InstalledFlowReturnMethod::HTTPRedirect,
-    ).build().await.unwrap();
+    )
+    .build()
+    .await
+    .expect("Failed to build authenticator");
 
-    DriveHub::new(hyper::Client::builder().build(hyper_rustls::HttpsConnector::with_native_roots()), auth)
-}
-use crate::core::models::{FileEntry, FileSource};
+    // FIXED: unwrap the Result from `with_native_roots()`
+    let https = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_native_roots()
+        .expect("Failed to load native cert roots")
+        .https_or_http()
+        .enable_http1()
+        .build();
 
-pub async fn get_drive_files(_min_size: u64) -> Vec<FileEntry> {
-    // TODO: Implement Google Drive API logic here
-    vec![] // placeholder
+    let client = hyper::Client::builder().build(https);
+
+    DriveHub::new(client, auth)
 }
