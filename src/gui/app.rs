@@ -1,40 +1,47 @@
 use std::collections::HashMap;
-use std::path::{PathBuf};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+use std::thread;
+
 use eframe::egui::{self, CentralPanel, Context};
 use crate::core::{hashing, scanner};
 
 #[derive(PartialEq)]
 enum ScanState {
     Idle,
-    Scanning,
-    Hashing,
-    Complete,
+    Working,
+    Done,
+    Cancelled,
 }
 
 pub struct DuplicateApp {
     pub scan_path: String,
-    pub scan_state: ScanState,
-    pub files_to_hash: Vec<PathBuf>,
-    pub duplicates: HashMap<String, Vec<PathBuf>>,
     pub scan_status: String,
     pub file_count: usize,
     pub deleted_files: usize,
     pub deleted_bytes: u64,
-    pub trigger_scan: bool,
+    pub duplicates: HashMap<String, Vec<PathBuf>>,
+    pub scan_state: ScanState,
+    pub thread_handle: Option<thread::JoinHandle<()>>,
+    pub shared_results: Arc<Mutex<Option<(usize, HashMap<String, Vec<PathBuf>>)>>>,
+    pub cancel_flag: Arc<AtomicBool>,
+    pub live_count: Arc<Mutex<usize>>,
 }
 
 impl Default for DuplicateApp {
     fn default() -> Self {
         Self {
-            scan_path: String::from("C:\\"),
-            scan_state: ScanState::Idle,
-            files_to_hash: vec![],
-            duplicates: HashMap::new(),
+            scan_path: String::from("D:\\"),
             scan_status: "Idle".to_string(),
             file_count: 0,
             deleted_files: 0,
             deleted_bytes: 0,
-            trigger_scan: false,
+            duplicates: HashMap::new(),
+            scan_state: ScanState::Idle,
+            thread_handle: None,
+            shared_results: Arc::new(Mutex::new(None)),
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+            live_count: Arc::new(Mutex::new(0)),
         }
     }
 }
@@ -47,36 +54,71 @@ impl eframe::App for DuplicateApp {
             ui.horizontal(|ui| {
                 ui.label("Folder to scan:");
                 ui.text_edit_singleline(&mut self.scan_path);
-                if ui.button("Scan Now").clicked() {
-                    self.trigger_scan = true;
+
+                if self.scan_state == ScanState::Idle || self.scan_state == ScanState::Done || self.scan_state == ScanState::Cancelled {
+                    if ui.button("Scan Now").clicked() {
+                        self.deleted_files = 0;
+                        self.deleted_bytes = 0;
+                        self.duplicates.clear();
+                        self.file_count = 0;
+                        self.scan_status = "Scanning...".to_string();
+                        self.scan_state = ScanState::Working;
+
+                        let folder = PathBuf::from(self.scan_path.trim());
+                        let shared = self.shared_results.clone();
+                        let cancel_flag = self.cancel_flag.clone();
+                        let live_count = self.live_count.clone();
+                        self.cancel_flag.store(false, Ordering::Relaxed);
+                        *self.live_count.lock().unwrap() = 0;
+
+                        self.thread_handle = Some(thread::spawn(move || {
+                            let files = scanner::scan_files_interruptible(
+                                &[folder],
+                                1_000_000,
+                                cancel_flag.clone(),
+                                live_count.clone(),
+                            );
+
+                            if cancel_flag.load(Ordering::Relaxed) {
+                                return;
+                            }
+
+                            let file_count = files.len();
+                            let dups = hashing::find_duplicates(&files);
+                            let mut locked = shared.lock().unwrap();
+                            *locked = Some((file_count, dups));
+                        }));
+                    }
+                }
+
+                if self.scan_state == ScanState::Working {
+                    if ui.button("Cancel").clicked() {
+                        self.cancel_flag.store(true, Ordering::Relaxed);
+                        self.scan_status = "Cancelling...".to_string();
+                    }
                 }
             });
 
-            // Handle scan trigger
-            if self.trigger_scan {
-                self.trigger_scan = false;
-                self.scan_state = ScanState::Scanning;
-                self.scan_status = "Scanning folder...".to_string();
-                self.deleted_files = 0;
-                self.deleted_bytes = 0;
-                self.duplicates.clear();
-                self.files_to_hash.clear();
-                self.file_count = 0;
-
-                let folder = PathBuf::from(self.scan_path.trim());
-                self.files_to_hash = scanner::scan_files(&[folder], 1_000_000);
-                self.file_count = self.files_to_hash.len();
-                self.scan_state = ScanState::Hashing;
+            if self.scan_state == ScanState::Working {
+                if let Ok(mut locked) = self.shared_results.try_lock() {
+                    if let Some((count, dups)) = locked.take() {
+                        self.file_count = count;
+                        self.duplicates = dups;
+                        self.scan_status = format!(
+                            "Done: {} duplicate groups from {} files",
+                            self.duplicates.len(),
+                            self.file_count
+                        );
+                        self.scan_state = ScanState::Done;
+                    } else if self.cancel_flag.load(Ordering::Relaxed) {
+                        self.scan_status = "Cancelled.".to_string();
+                        self.scan_state = ScanState::Cancelled;
+                    }
+                }
             }
 
-            if self.scan_state == ScanState::Hashing {
-                self.scan_status = format!("Hashing {} files...", self.file_count);
-                self.duplicates = hashing::find_duplicates(&self.files_to_hash);
-                self.scan_status = format!(
-                    "Scan complete: {} duplicate groups",
-                    self.duplicates.len()
-                );
-                self.scan_state = ScanState::Complete;
+            if let Ok(count) = self.live_count.lock() {
+                self.file_count = *count;
             }
 
             ui.separator();
@@ -118,6 +160,6 @@ impl eframe::App for DuplicateApp {
             self.duplicates = updated_duplicates;
         });
 
-        ctx.request_repaint(); // Force GUI to update each frame
+        ctx.request_repaint();
     }
 }
